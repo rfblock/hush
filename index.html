@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100;0,300;0,400;0,500;0,700;0,900;1,100;1,300;1,400;1,500;1,700;1,900&display=swap" rel="stylesheet">
+    <title>Hush</title>
+</head>
+<style>
+	.material-symbols-outlined {
+	  font-variation-settings:
+	  'FILL' 0,
+	  'wght' 400,
+	  'GRAD' 0,
+	  'opsz' 24
+	}
+	</style>
+<body>
+
+<div class="container">
+	<div class="banner">
+		<div>
+			<h1 class="roboto-bold contact-name"></h1>
+			</div>
+	</div>
+	<ul class="messages-container">
+		<!-- <li class="sender chat-item">Lorem ipsum</li>
+		<li class="receiver chat-item">dolor sit amet</li> -->
+	</ul>
+		<div class="chat-bar">
+			<div class="chat-bubble">
+				<input type="text" class="roboto-bold" placeholder="Waiting for connection..." disabled	></input>
+			</div>
+			<div class="send-button">
+				<span class="material-symbols-outlined">
+					send
+				</span>
+			</div>
+		</div>
+</div>
+
+<script>
+'use strict';
+
+const $ = x => document.querySelector(x);
+const $$ = x => document.querySelectorAll(x);
+
+const signalerURL = 'wss:5dbe-2607-ac80-406-4-5dfe-f535-87cc-c42e.ngrok-free.app';
+const signalerConnection = new WebSocket(signalerURL);
+
+let sendChannel;
+
+const configRTC = {
+	iceServers: [
+		{
+			urls: [
+				'stun:stun.l.google.com:19302',
+				'stun:stun1.l.google.com:19302',
+				'stun:stun2.l.google.com:19302',
+				'stun:stun3.l.google.com:19302',
+				'stun:stun4.l.google.com:19302',
+			],
+		},
+	],	
+};
+
+const username = prompt('username');
+const target = prompt('target');
+
+const appendMessage = (msg, sender) => {
+	const elem = document.createElement('li');
+	const parent = $('.messages-container');
+	elem.innerText = msg;
+	elem.classList.add('chat-item');
+	elem.classList.add(sender ? 'sender' : 'receiver')
+	parent.appendChild(elem);
+	parent.scrollTop = parent.scrollHeight;
+};
+
+const submit = () => {
+	const node = $('.chat-bubble > input');
+	const msg = node.value;
+	node.value = '';
+	console.log(msg);
+	sendChannel.send(msg);
+	appendMessage(msg, true);
+};
+
+const unlockInput = () => {
+	const node = $('.chat-bubble > input');
+	node.disabled = false;
+	node.placeholder = 'Enter text here'
+}
+
+$('.contact-name').innerText = target;
+
+$('.chat-bubble > input').addEventListener('keydown', e => {
+	if (e.repeat) return;
+
+	if (e.code === 'Enter') {
+		submit();
+	}
+});
+
+$('.send-button').addEventListener('click', submit);
+
+const sendToServer = (msg) => {
+	signalerConnection.send(JSON.stringify(msg));
+};
+
+const connect = (isCaller) => {
+	const peerConnection = new RTCPeerConnection(configRTC);
+	
+	peerConnection.addEventListener('icegatheringstatechange', e => console.log(e));
+
+	peerConnection.addEventListener('icecandidate', e => {
+		if (e.candidate !== null) {
+			sendToServer({
+				username,
+				target,
+				ice: e.candidate,
+			});
+		}
+	});
+
+	const handleDataChannel = () => {
+		console.log('Initialized Data Channel');
+		sendChannel.addEventListener('message', e => appendMessage(e.data, false))
+		window.sendChannel = sendChannel;
+	}
+
+	if (isCaller) {
+		sendChannel = peerConnection.createDataChannel('sendDataChannel');
+		handleDataChannel();
+	} else {
+		peerConnection.addEventListener('datachannel', e => {
+			console.log('Channel Opened');
+
+			sendChannel = event.channel;
+			handleDataChannel();
+		})
+	}
+
+	// Welcome to callback hell :3
+	peerConnection.ondatachannel = e => {
+		const receiveChannel = e.channel;
+
+		receiveChannel.addEventListener('message', event => {
+			console.log(`Received: ${event.data}`);
+		});
+
+		receiveChannel.addEventListener('open', event => {
+			console.log('Channel Opened');
+			unlockInput();
+		});
+
+		receiveChannel.addEventListener('close', event => {
+			console.log('Channel Closed');
+		});
+	};
+
+	signalerConnection.addEventListener('message', e => {
+		const data = JSON.parse(e.data);
+
+		if (data.offer) {
+			console.log('Creating Answer');
+			peerConnection.setRemoteDescription(data.offer)
+				.then(() => peerConnection.createAnswer())
+				.then(ans => peerConnection.setLocalDescription(ans))
+				.then(() => sendToServer({
+					username,
+					target,
+					answer: peerConnection.localDescription
+				}))
+				.then(() => sendToServer({
+					username,
+					target,
+					disconnect: true,
+				}))
+				.catch(err => console.error(err));
+		}
+
+		if (data.answer) {
+			console.log('Received Answer');
+			peerConnection.setRemoteDescription(data.answer)
+				.catch(err => console.error(err));
+			sendToServer({
+				username,
+				target,
+				disconnect: true,
+			});
+			unlockInput()
+		}
+
+		if (data.ice) {
+			peerConnection.addIceCandidate(data.ice)
+				.then(() => console.log('Added ICE Candidate'))
+				.catch(err => console.error(err));
+		}
+	});
+
+	if (isCaller) {
+		console.log('Creating Offer');
+		peerConnection.createOffer()
+			.then(offer => peerConnection.setLocalDescription(offer))
+			.then(() => sendToServer({
+				username,
+				target,
+				offer: peerConnection.localDescription,
+			}))
+			.catch(err => console.error(err));
+	}
+};
+
+const main = () => {
+	console.log('Waiting to pair');
+
+	signalerConnection.addEventListener('open', e => {
+		sendToServer({
+			username,
+			target,
+			hello: true,
+		});
+	});
+
+	signalerConnection.addEventListener('message', e => {
+		console.log(e);
+		const data = JSON.parse(e.data);
+		if (data.iscaller !== undefined) {
+			console.log('Starting connection');
+			connect(data.iscaller);
+		}
+	});
+};
+
+main();
+</script>
+
+<style>
+/* I know I know, this should be broken into two files but it's packaged into one for portability */
+html {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+body {
+    background-color: rgb(255, 255, 255);
+    height: 100%;
+	margin: 0;
+    font-family: "Roboto";
+}
+
+h1 {
+    font-size: 100%;
+    word-spacing: 0.5em;
+    letter-spacing: 0.2em;
+	text-transform: uppercase;
+}
+.container {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+.messages-container {
+    display: flex;
+    flex-direction: column;
+    /* justify-content: flex-start; */
+    padding: 0;
+    margin: 0;
+    list-style: none;
+    height: 100%;
+	overflow-y: scroll;
+}
+.chat-item {
+    padding: 12px;
+    max-width: 50%;
+    margin-top: 10px;
+    color: white;
+    font-weight: 300;
+    font-size: 12pt;
+    text-align: center;
+    border-radius: 25px;
+}
+.sender.chat-item {
+	text-align: right;
+    background: pink;
+	align-self: flex-end;
+}
+.receiver.chat-item {
+	text-align: left;
+	background: rgb(196, 165, 170);
+	align-self: flex-start;
+}
+.banner {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+    overflow: hidden;
+    background-color: pink;
+    width: 100vw;
+	margin: 0;
+	height: 100px;
+}
+.chat-bubble {
+    display: flex;
+    overflow: hidden;
+    background-color: pink;
+    width: 90%;
+    height: 75px;
+    border-radius: 25px;
+    margin: 20px;
+    padding-left: 15px;
+}
+.chat-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-evenly;
+}
+.send-button {
+	background-color: pink;
+	color: white;
+	border-radius: 100%;
+	padding-left: 5px;
+	margin-right: 20px;
+
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	height: 75px;
+	aspect-ratio: 1/1;
+}
+.send-button > .material-symbols-outlined {
+	font-size: 56px;
+}
+.chat-bubble > input {
+    border: none;
+    background-color: pink;
+    /* width: 100%; */
+}
+.chat-bubble > input:focus {
+    outline: none;
+}
+</style>
+
+</body>
+</html>
